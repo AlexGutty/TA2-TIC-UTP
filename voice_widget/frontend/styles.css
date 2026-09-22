@@ -1,0 +1,227 @@
+/* ===== Estilos del widget de entrada (texto + voz) ===== */
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: sans-serif;
+    overflow: hidden;
+}
+
+#bar {
+    display: flex;
+    align-items: center;
+    background: #2f2f2f;
+    border-radius: 24px;
+    padding: 6px 6px 6px 18px;
+    gap: 8px;
+}
+
+#text-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #ececec;
+    font-size: 0.98rem;
+    font-family: sans-serif;
+    padding: 8px 0;
+}
+
+#text-input::placeholder { color: #8e8e8e; }
+#text-input:disabled { opacity: 0.75; }
+
+#mic-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: #2f2f2f;
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: #ececec;
+    font-size: 18px;
+    flex-shrink: 0;
+    transition: transform 0.05s linear, background 0.2s ease;
+}
+
+#mic-icon.recording {
+    background: #19c37d;
+    color: #0b0b0b;
+}
+
+#mic-icon.waiting {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+#send-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+    background: #ececec;
+    color: #171717;
+    cursor: pointer;
+}
+
+#send-btn:disabled {
+    background: #3a3a3a;
+    color: #6b6b6b;
+    cursor: default;
+}
+
+/* ===== Estilos de la pagina principal de Streamlit ===== */
+
+/* (limitar el ancho del contenido y centrarlo, como ChatGPT) */
+.block-container {
+    max-width: 48rem;
+    padding-top: 2rem;
+    padding-bottom: 8rem;
+}
+
+/* (ocultar el menu y footer por defecto de Streamlit para un look mas limpio) */
+#MainMenu, footer {
+    visibility: hidden;
+}
+
+/* (titulo mas limpio) */
+h1 {
+    font-size: 1.6rem !important;
+    font-weight: 600 !important;
+    margin-bottom: 1.5rem !important;
+}
+
+/* (burbujas de mensaje con fondo diferenciado) */
+div[data-testid="stChatMessage"] {
+    padding: 0.9rem 1.1rem;
+    border-radius: 14px;
+    margin-bottom: 0.8rem;
+    gap: 0.8rem;
+}
+
+/* (burbuja del usuario, alineada a la derecha con fondo propio) */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarUser"]) {
+    background-color: #2f2f2f;
+    flex-direction: row-reverse;
+    text-align: right;
+    margin-left: 15%;
+}
+
+/* (burbuja del asistente, sin fondo, como Claude/ChatGPT) */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) {
+    background-color: transparent;
+    margin-right: 5%;
+}
+
+/* (avatares mas discretos y redondos) */
+div[data-testid="stChatMessageAvatarUser"],
+div[data-testid="stChatMessageAvatarAssistant"] {
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+}
+
+/* (texto del mensaje mas legible) */
+div[data-testid="stChatMessageContent"] p {
+    font-size: 0.98rem;
+    line-height: 1.6;
+}
+
+/* (sidebar con separacion mas limpia) */
+section[data-testid="stSidebar"] {
+    border-right: 1px solid #2a2a2a;
+}
+
+/* (boton de nuevo chat con estilo mas suave) */
+section[data-testid="stSidebar"] button {
+    border-radius: 10px !important;
+}
+
+/* (barra de entrada, fija al fondo - "left" y "width" copian la
+   posicion real del contenido del chat, medida en index.html) */
+div.st-key-input_bar {
+    position: fixed;
+    bottom: 0;
+    left: var(--content-left, 0px);
+    width: var(--content-width, 100%);
+    background-color: #212121;
+    padding: 1rem 0 1.5rem 0;
+    z-index: 999;
+    transition: left 0.3s ease, width 0.3s ease;
+}
+
+div.st-key-input_bar > div {
+    width: 100%;
+    padding: 0 1rem;
+    box-sizing: border-box;
+}
+
+div.st-key-input_bar iframe {
+    width: 100%;
+    border: none;
+    background: transparent;
+}
+
+/* (botones de responder / escuchar debajo de cada respuesta del bot) */
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) button {
+    background: transparent !important;
+    border: none !important;
+    color: #8e8e8e !important;
+    font-size: 0.85rem !important;
+    padding: 2px 6px !important;
+    min-height: 0 !important;
+    box-shadow: none !important;
+}
+
+div[data-testid="stChatMessage"]:has(div[data-testid="stChatMessageAvatarAssistant"]) button:hover {
+    color: #ececec !important;
+}
+
+/* (cita de referencia dentro de una burbuja, cuando el mensaje
+   fue enviado como respuesta a otro mensaje anterior) */
+.reply-quote {
+    border-left: 3px solid #565869;
+    padding-left: 10px;
+    margin-bottom: 6px;
+    color: #b5b5b5;
+    font-size: 0.85rem;
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* (chip que aparece arriba de la barra de entrada mientras
+   se esta respondiendo a un mensaje) */
+.reply-chip {
+    background: #2a2a2a;
+    border-left: 3px solid #19c37d;
+    border-radius: 12px;
+    padding: 8px 14px;
+    font-size: 0.85rem;
+    color: #b5b5b5;
+    margin-bottom: 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reply-chip span {
+    color: #ececec;
+    font-style: italic;
+}
+
+/* (boton de cancelar respuesta, pequeno y discreto junto al chip) */
+div.st-key-input_bar div[data-testid="stColumn"]:has(button[kind]) button {
+    background: transparent !important;
+    border: none !important;
+    color: #8e8e8e !important;
+    min-height: 0 !important;
+    box-shadow: none !important;
+}
