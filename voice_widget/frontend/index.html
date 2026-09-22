@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="bar">
+  <input id="text-input" type="text" placeholder="Escribe tu mensaje..." />
+  <button id="mic-icon">🎤</button>
+  <button id="send-btn" disabled>↑</button>
+</div>
+
+<script>
+// (implementacion manual del protocolo de comunicacion de Streamlit,
+// sin depender de librerias externas ni de Node/npm)
+function sendMessageToStreamlit(type, data) {
+  const message = Object.assign({
+    isStreamlitMessage: true,
+    type: type,
+  }, data);
+  window.parent.postMessage(message, "*");
+}
+
+function notifyReady() {
+  sendMessageToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+}
+
+function setFrameHeight(height) {
+  sendMessageToStreamlit("streamlit:setFrameHeight", { height: height });
+}
+
+function submitValue(payload) {
+  sendMessageToStreamlit("streamlit:setComponentValue", {
+    value: Object.assign({ nonce: Date.now() + Math.random() }, payload),
+    dataType: "json"
+  });
+}
+
+notifyReady();
+setFrameHeight(56);
+
+const textInput = document.getElementById("text-input");
+const micIcon = document.getElementById("mic-icon");
+const sendBtn = document.getElementById("send-btn");
+
+// (fragmentos mas cortos = actualizaciones mas rapidas, a costa de
+// un poco menos de contexto por fragmento para Whisper)
+const CHUNK_MS = 1200;
+
+// (volumen minimo para considerar que el fragmento tiene voz real,
+// evita mandar silencio o ruido de fondo a Whisper)
+const SOUND_THRESHOLD = 18;
+
+// (cuantos "instantes" seguidos de sonido por encima del umbral se
+// necesitan para confirmar que es voz y no un pico de ruido aislado -
+// a 60 frames por segundo, 12 equivale a ~200ms sostenidos)
+const MIN_SOUND_FRAMES = 12;
+
+let audioContext = null;
+let analyser = null;
+let micStream = null;
+let mediaRecorder = null;
+let chunkData = [];
+let animationFrame = null;
+let chunkTimer = null;
+let recording = false;
+let waiting = false;
+let pendingFinal = false;
+let recordingId = null;
+let lastPrefillToken = null;
+let chunkHadSound = false;
+let soundFrameCount = 0;
+
+function updateSendButton() {
+  sendBtn.disabled = textInput.value.trim().length === 0;
+}
+
+textInput.addEventListener("input", updateSendButton);
+
+textInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && textInput.value.trim().length > 0) {
+    const text = textInput.value.trim();
+    textInput.value = "";
+    updateSendButton();
+    submitValue({ type: "text", data: text });
+  }
+});
+
+sendBtn.addEventListener("click", () => {
+  const text = textInput.value.trim();
+  if (text) {
+    textInput.value = "";
+    updateSendButton();
+    submitValue({ type: "text", data: text });
+  }
+});
+
+// (dibuja el circulo del microfono reaccionando al volumen real de la voz,
+// y solo marca el fragmento como "con voz" si el sonido se sostiene
+// por MIN_SOUND_FRAMES instantes seguidos, no con un pico aislado)
+function startVisualizer(stream) {
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioContext.createMediaStreamSource(stream);
+  analyser = audioContext.createAnalyser();
+  analyser.fftSize = 256;
+  source.connect(analyser);
+
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+  function tick() {
+    analyser.getByteFrequencyData(dataArray);
+    const avg = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+    const scale = 1 + Math.min(avg / 80, 1) * 0.5;
+    micIcon.style.transform = `scale(${scale})`;
+
+    if (avg > SOUND_THRESHOLD) {
+      soundFrameCount++;
+      if (soundFrameCount >= MIN_SOUND_FRAMES) chunkHadSound = true;
+    } else {
+      soundFrameCount = 0;
+    }
+
+    animationFrame = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function stopVisualizer() {
+  if (animationFrame) cancelAnimationFrame(animationFrame);
+  if (audioContext) audioContext.close();
+  micIcon.style.transform = "scale(1)";
+}
+
+// (cada segmento se graba con un MediaRecorder nuevo para que el archivo
+// tenga cabecera valida y Whisper pueda transcribirlo de forma independiente)
+function beginChunk() {
+  chunkData = [];
+  chunkHadSound = false;
+  soundFrameCount = 0;
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) chunkData.push(e.data);
+  };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(chunkData, { type: mediaRecorder.mimeType });
+
+    if (chunkHadSound && blob.size > 0) {
+      sendChunk(blob, mediaRecorder.mimeType, pendingFinal);
+    } else if (pendingFinal) {
+      submitValue({ type: "audio_done", recording_id: recordingId, final: true });
+    }
+
+    if (!pendingFinal && recording) {
+      beginChunk();
+    }
+  };
+  mediaRecorder.start();
+}
+
+function sendChunk(blob, mime, isFinal) {
+  const reader = new FileReader();
+  reader.onloadend = () => {
+    const base64 = reader.result.split(",")[1];
+    submitValue({
+      type: "audio_chunk",
+      data: base64,
+      mime: mime,
+      recording_id: recordingId,
+      final: isFinal
+    });
+  };
+  reader.readAsDataURL(blob);
+}
+
+async function startRecording() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    alert("No se pudo acceder al microfono: " + e.message);
+    return;
+  }
+
+  recording = true;
+  pendingFinal = false;
+  recordingId = Date.now() + "-" + Math.random();
+
+  textInput.value = "";
+  textInput.placeholder = "Escuchando...";
+  textInput.disabled = true;
+  sendBtn.disabled = true;
+  micIcon.classList.add("recording");
+
+  startVisualizer(micStream);
+  beginChunk();
+
+  chunkTimer = setInterval(() => {
+    if (mediaRecorder && mediaRecorder.state === "recording") {
+      mediaRecorder.stop();
+    }
+  }, CHUNK_MS);
+}
+
+function stopRecording() {
+  recording = false;
+  pendingFinal = true;
+  waiting = true;
+  clearInterval(chunkTimer);
+
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop();
+  }
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+
+  stopVisualizer();
+  micIcon.classList.remove("recording");
+  micIcon.classList.add("waiting");
+  textInput.placeholder = "Transcribiendo...";
+}
+
+micIcon.addEventListener("click", () => {
+  if (waiting) return;
+  if (!recording) {
+    startRecording();
+  } else {
+    stopRecording();
+  }
+});
+
+// (escucha las nuevas props que envia Python en cada rerun)
+window.addEventListener("message", (event) => {
+  if (event.data.type !== "streamlit:render") return;
+
+  setFrameHeight(56);
+
+  const args = event.data.args || {};
+  const token = args.prefill_token;
+
+  if (typeof token !== "undefined" && token !== lastPrefillToken) {
+    if (lastPrefillToken !== null) {
+      textInput.value = args.prefill_text || "";
+
+      if (args.prefill_done) {
+        waiting = false;
+        micIcon.classList.remove("waiting");
+        textInput.disabled = false;
+        textInput.placeholder = "Escribe tu mensaje...";
+        updateSendButton();
+        textInput.focus();
+      }
+    }
+    lastPrefillToken = token;
+  }
+});
+
+// (mide la posicion REAL del contenido del chat en la ventana principal
+// - el mismo rectangulo donde caen los mensajes - y la publica como
+// variables CSS, para que la barra de entrada fija quede exactamente
+// alineada con el contenido, sin importar el padding interno de Streamlit
+// ni si el sidebar esta abierto o cerrado)
+function watchLayout() {
+  try {
+    const parentDoc = window.parent.document;
+
+    function findContentBox() {
+      return (
+        parentDoc.querySelector('section[data-testid="stMain"] .block-container') ||
+        parentDoc.querySelector('.block-container')
+      );
+    }
+
+    function updateOffset() {
+      const box = findContentBox();
+      if (!box) return;
+      const rect = box.getBoundingClientRect();
+      parentDoc.documentElement.style.setProperty("--content-left", rect.left + "px");
+      parentDoc.documentElement.style.setProperty("--content-width", rect.width + "px");
+    }
+
+    updateOffset();
+
+    const sidebar = parentDoc.querySelector('section[data-testid="stSidebar"]');
+    if (sidebar) {
+      const ro = new ResizeObserver(updateOffset);
+      ro.observe(sidebar);
+    }
+    window.parent.addEventListener("resize", updateOffset);
+
+    // (respaldo: revisa cada 250ms por si la animacion de colapso
+    // del sidebar no dispara el ResizeObserver a tiempo)
+    setInterval(updateOffset, 250);
+  } catch (e) {
+    // (si el navegador bloquea el acceso al padre, la barra usara
+    // el valor por defecto centrado sin ajustarse dinamicamente)
+  }
+}
+watchLayout();
+</script>
+
+</body>
+</html>
