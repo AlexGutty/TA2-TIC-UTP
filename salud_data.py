@@ -145,13 +145,18 @@ def consultar_ocupacion_uci(region: str, hospital: str | None = None) -> dict:
     """Consulta el reporte mas reciente de ocupacion de UCI de adultos,
     filtrado por region y opcionalmente por nombre de hospital.
 
-    Devuelve un resumen ya agregado -- nunca el CSV crudo.
+    Devuelve un resumen ya agregado y recortado -- nunca el CSV crudo. Cuando
+    se pide una region entera (sin hospital puntual) se omiten los hospitales
+    sin UCI de adultos operativa: son ruido para el analisis de brechas y
+    infladan mucho la respuesta (ahorra tokens en el modelo).
     """
     df = _dataset_procesado()
 
     filtro = df["REGION"].str.upper() == region.strip().upper()
     if hospital:
         filtro &= df["NOMBRE"].str.upper().str.contains(hospital.strip().upper(), na=False)
+    else:
+        filtro &= df["camas_operativas"] > 0
 
     subset = df[filtro]
 
@@ -165,20 +170,24 @@ def consultar_ocupacion_uci(region: str, hospital: str | None = None) -> dict:
     resultados = []
     for _, row in subset.iterrows():
         resultados.append({
-            "codigo": int(row["CODIGO"]),
             "nombre": row["NOMBRE"],
             "region": row["REGION"],
             "provincia": row["PROVINCIA"],
-            "distrito": row["DISTRITO"],
             "fecha_reporte": row["FECHACORTE"].strftime("%Y-%m-%d") if pd.notna(row["FECHACORTE"]) else None,
-            "camas_operativas": row["camas_operativas"],
-            "camas_disponibles": row["camas_disponibles"],
-            "camas_ocupadas": row["camas_ocupadas"],
+            "camas_operativas": int(row["camas_operativas"]),
+            "camas_ocupadas": int(row["camas_ocupadas"]),
             "ocupacion_pct": row["ocupacion_pct"],
-            "tiene_uci_adultos": row["camas_operativas"] > 0,
         })
 
     return {"encontrado": True, "total_hospitales": len(resultados), "hospitales": resultados}
+
+
+# Tope de hospitales individuales devueltos en el listado nacional/regional
+# de brechas -- el conteo por region ya da el panorama completo; listar cada
+# hospital cuando hay decenas en brecha infla la respuesta muy por encima de
+# lo que el modelo necesita para responder (y del limite de tokens por
+# minuto de la API).
+_TOPE_HOSPITALES_LISTADO = 25
 
 
 def listar_hospitales_en_brecha_critica(region: str | None = None) -> dict:
@@ -189,7 +198,9 @@ def listar_hospitales_en_brecha_critica(region: str | None = None) -> dict:
     Existe para preguntas de alcance nacional o "todas las regiones" -- evita
     que el modelo tenga que llamar consultar_ocupacion_uci region por region
     (24 veces), que es lento y hace que el tool calling de Groq se vuelva
-    inestable con este modelo."""
+    inestable con este modelo. El listado individual se recorta a los mas
+    criticos (_TOPE_HOSPITALES_LISTADO); el conteo por region siempre es
+    completo."""
     df = _dataset_procesado()
     con_uci = df[df["camas_operativas"] > 0].copy()
 
@@ -204,22 +215,29 @@ def listar_hospitales_en_brecha_critica(region: str | None = None) -> dict:
         {
             "nombre": row["NOMBRE"],
             "region": row["REGION"],
-            "provincia": row["PROVINCIA"],
             "ocupacion_pct": row["ocupacion_pct"],
-            "fecha_reporte": row["FECHACORTE"].strftime("%Y-%m-%d") if pd.notna(row["FECHACORTE"]) else None,
         }
-        for _, row in en_brecha.iterrows()
+        for _, row in en_brecha.head(_TOPE_HOSPITALES_LISTADO).iterrows()
     ]
 
     conteo_por_region = (
         en_brecha.groupby("REGION").size().sort_values(ascending=False).to_dict()
     )
 
+    fecha_reporte = (
+        con_uci["FECHACORTE"].max().strftime("%Y-%m-%d") if not con_uci.empty and pd.notna(con_uci["FECHACORTE"].max()) else None
+    )
+
     return {
-        "total_hospitales_en_brecha": len(hospitales),
+        "total_hospitales_en_brecha": len(en_brecha),
         "total_hospitales_con_uci_evaluados": len(con_uci),
+        "fecha_reporte": fecha_reporte,
         "conteo_por_region": conteo_por_region,
-        "hospitales": hospitales,
+        "hospitales_top": hospitales,
+        "nota": (
+            f"Se muestran los {len(hospitales)} mas criticos de {len(en_brecha)} en brecha; "
+            "usa conteo_por_region para el panorama completo."
+        ) if len(en_brecha) > len(hospitales) else None,
     }
 
 
